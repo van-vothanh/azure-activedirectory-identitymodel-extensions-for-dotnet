@@ -25,7 +25,6 @@
 //
 //------------------------------------------------------------------------------
 
-using System.Collections.Generic;
 using Microsoft.IdentityModel.Tests;
 using Microsoft.IdentityModel.Tokens;
 using Xunit;
