@@ -1,28 +1,120 @@
 <Project>
 	<PropertyGroup>
-		<RunApiCompat>true</RunApiCompat>
+		<!-- RunApiCompat control flag. -->
+		<RunApiCompat>false</RunApiCompat>
+		<!-- APICompat to verify that the implementation has all the APIs that are in the contract assembly. -->
 		<RunApiCompatForSrc>true</RunApiCompatForSrc>
+		<!-- Reverse APICompat to verify that the contract assembly has all the APIs that are in the implementation. -->
 		<RunMatchingRefApiCompat>false</RunMatchingRefApiCompat>
+		<!-- Include optional rules, i.e. ParameterNamesCannotChange -->
 		<ApiCompatEnforceOptionalRules>true</ApiCompatEnforceOptionalRules>
-		<ApiCompatBaseline>$(SolutionDir)Tools\apiCompat\baseline\ApiCompatBaseline.$(TargetFramework).txt</ApiCompatBaseline>
+		<!-- ApiCompat root directory. -->
+		<ApiCompatRoot>$(MSBuildThisFileDirectory)..\Tools\apiCompat\</ApiCompatRoot>
+		<!--
+		Specifies if contract assembly should be obtained from Nuget. If 'false',
+		local contract assembly from {ApiCompatRoot}\contractAssemblies\{ContractAssemblyNugetVersion}\{TargetFramework} dir will be used.
+		-->
+		<UseContractAssembliesFromNuget>true</UseContractAssembliesFromNuget>
+		<!-- Version of the nuget package that contains qqthe contract assembly. -->
+		<ContractAssemblyNugetVersion>5.3.0</ContractAssemblyNugetVersion>
 	</PropertyGroup>
 
 	<ItemGroup>
+		<!-- Reference ApiCompat package. Nuget.Config needs dotnet-core feed source. -->
 		<PackageReference Include="Microsoft.DotNet.ApiCompat" Version="1.0.0-beta.18557.3" PrivateAssets="All" />
+		<!-- ContractAssembly. ResolvedMatchingContract is needed by the ApiCompat. -->
+		<ResolvedMatchingContract Include="$(ApiCompatRoot)contractAssemblies\$(ContractAssemblyNugetVersion)\$(TargetFramework)\$(TargetName).dll " />
+		<!-- ApiCompat baseline file. -->
+		<ApiCompatBaseline Include="$(ApiCompatRoot)baseline\ApiCompatBaseline.$(TargetFramework).txt" />
+		<!-- Location of the nuget package to download. -->
+		<NugetPackageDownloadUrl Include="https://www.nuget.org/api/v2/package/$(TargetName)/$(ContractAssemblyNugetVersion)" />
+		<!-- Local Nuget package file that contains the contract assembly. -->
+		<NugetPackage Include="$(ApiCompatRoot)downloadedPackages\$(TargetName).$(ContractAssemblyNugetVersion).nupkg" />
 	</ItemGroup>
 
-	<ItemGroup>
-		<ResolvedMatchingContract Include="$(SolutionDir)Tools/apiCompat/contractAssemblies/$(TargetFramework)/$(TargetName).dll " />
-	</ItemGroup>
-
-	<Target Name="CheckIfContractAssemblyExists" Condition="'$(RunApiCompat)' == 'true' AND !Exists('@(ResolvedMatchingContract)')" BeforeTargets="ValidateApiCompatForSrc">
-		<Warning Text="Contract assembly doesn't exist. ApiCompat will not run for the assembly: @(ResolvedMatchingContract)."/>
+	<!-- Print-out a message that/if AiCompat is running for the contract assembly. -->
+	<Target Name="EchoApiCompat" Condition="'$(RunApiCompat)' == 'true'" BeforeTargets="CheckIfContractAssemblyExists">
+		<Message Importance="High" Text=">>> Running ApiCompat for the assembly: $(TargetFramework)\$(TargetName).dll"/>
 	</Target>
 
+	<!-- Print-out a warning that/if the contract assembly is not found and that ApiCompat will skip it. -->
+	<Target Name="CheckIfContractAssemblyExists" Condition="'$(RunApiCompat)' == 'true' AND !Exists('@(ResolvedMatchingContract)')" BeforeTargets="ValidateApiCompatForSrc">
+		<Warning Text=">>> Contract assembly doesn't exist. ApiCompat will not run for the assembly: @(ResolvedMatchingContract)"/>
+	</Target>
+
+	<!-- Include directories that contain dependencies of the contract assembly. _ContractDependencyDirectories is needed by the ApiCompat. -->
 	<Target Name="ResolveContractDependencyDirectories" BeforeTargets="ValidateApiCompatForSrc">
 		<ItemGroup>
 			<_DependencyDirectoriesTemp Include="@(ReferencePath->'%(RootDir)%(Directory)')" />
 			<_ContractDependencyDirectories Include="%(_DependencyDirectoriesTemp.Identity)" />
 		</ItemGroup>
+	</Target>
+
+	<!-- Print-out a message to notify that/if ApiCompat is turned off. -->
+	<Target Name="WarnIfApiCompatIsDisabled" Condition="'$(RunApiCompat)' == 'false'" BeforeTargets="BeforeBuild">
+		<Message Importance="High"
+			Text=">>> ApiCompat is disabled and it will not run for the assembly: $(TargetFramework)\$(TargetName).dll. To enable ApiCompat include '-runApiCompat' flag when building, or set the 'RunApiCompat' property to true."
+		/>
+	</Target>
+
+	<!-- Downloads the Nuget package that contains the contract assembly, in case when the package is not already downloaded. -->
+	<Target Name="DownloadContractAssemblyFromNuget"
+		Condition="'$(RunApiCompat)' == 'true'
+		       AND '$(UseContractAssembliesFromNuget)' == 'true'
+		       AND !Exists('@(NugetPackage)')"
+		BeforeTargets="BeforeBuild">
+		<DownloadFile
+	            SourceUrl="@(NugetPackageDownloadUrl)"
+	            DestinationFolder="$(ApiCompatRoot)downloadedPackages"
+	            ContinueOnError="false">
+	    </DownloadFile>
+	</Target>
+
+	<!--
+	Unzips the Nuget package, in case when the contract assembly doesn't exist
+	in the destination dir - {ApiCompatRoot}\contractAssemblies\{Version}\{Target}.
+	-->
+	<Target Name="UnzipNugetPackage"
+		Condition="'$(RunApiCompat)' == 'true'
+			   AND '$(UseContractAssembliesFromNuget)' == 'true'
+			   AND !Exists('@(ResolvedMatchingContract)')"
+		AfterTargets="DownloadContractAssemblyFromNuget">
+		<Unzip
+            SourceFiles="@(NugetPackage)"
+            DestinationFolder="$(ApiCompatRoot)downloadedPackages\unzipped\$(TargetName).$(ContractAssemblyNugetVersion)"
+            OverwriteReadOnlyFiles="true"
+            ContinueOnError="false"
+        />
+	</Target>
+
+	<!--
+	Moves the contract assembly to the destination dir {ApiCompatRoot}\contractAssemblies\{Version}\{Target}
+	in case when the contract assembly doesn't already exist in the destination dir.
+	-->
+	<Target Name="MoveAssembly"
+		Condition="'$(RunApiCompat)' == 'true'
+			   AND '$(UseContractAssembliesFromNuget)' == 'true'
+			   AND !Exists('@(ResolvedMatchingContract)')"
+		AfterTargets="UnzipNugetPackage">
+		<ItemGroup>
+            <AssemblyFiles Include="$(ApiCompatRoot)downloadedPackages\unzipped\$(TargetName).$(ContractAssemblyNugetVersion)\lib\**\*.dll"/>
+        </ItemGroup>
+        <Move
+            SourceFiles="@(AssemblyFiles)"
+            DestinationFiles="@(AssemblyFiles->'$(ApiCompatRoot)contractAssemblies\$(ContractAssemblyNugetVersion)\%(RecursiveDir)%(Filename)%(Extension)')"
+            OverwriteReadOnlyFiles="true"
+            ContinueOnError="false"
+        />
+	</Target>
+
+	<!-- Removes the 'unzipped' directory. Cleanup. -->
+	<Target Name="RemoveUnzippedDir"
+			Condition="'$(RunApiCompat)' == 'true'
+			       AND '$(UseContractAssembliesFromNuget)' == 'true'"
+		    AfterTargets="MoveAssembly">
+		    <RemoveDir
+                Directories="$(ApiCompatRoot)downloadedPackages\unzipped"
+                ContinueOnError="WarnAndContinue"
+		    />
 	</Target>
 </Project>
